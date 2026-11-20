@@ -16,8 +16,9 @@
 //     a two-state accrual, an earners flow regression (dE = alpha*ddays + s*dP), a log-time
 //     trend, a saturating power law and persistence — weighted by a lead-weighted backtest on
 //     the case's own last points blended with a structural prior; in regime B, each trophy's
-//     measured day-1 earners growth over the measured pool path (see DAY1_E0 / DAY1_E1:
-//     the kit's frozen launch page, and the live Exophase page read on 2026-11-20T03:42Z at
+//     measured earners growth over the measured pool path (see DAY1_E0 / DAY1_E1 / DAY1_E2:
+//     the kit's frozen launch page, and the live Exophase page read on 2026-11-20T03:42Z and
+//     again on 2026-11-20T08:18Z at
 //     https://www.exophase.com/game/grand-theft-auto-vi-psn/trophies/).
 // Earners never decrease: dilution lowers the fraction, never the count. The median is snapped
 // to the count grid (a whole number of earners at the projected pool, printed to 2 decimals
@@ -235,7 +236,7 @@ function fitPoolCurve(ts: number[], ps: number[], horizonH: number): PoolCurve {
     if (bestSatSse <= expSse / 0.6) {
       const hT = Math.max(horizonH, ts[n - 1]);
       const near = satCands
-        .filter((cand) => cand.sse <= bestSatSse * 1.3)
+        .filter((cand) => cand.sse <= bestSatSse * 1.15)
         .map((cand) => ({ at: cand.at, proj: cand.at(hT) }))
         .filter((cand) => Number.isFinite(cand.proj) && cand.proj > 0)
         .sort((x, y) => x.proj - y.proj);
@@ -261,14 +262,15 @@ function fitPoolCurve(ts: number[], ps: number[], horizonH: number): PoolCurve {
 /**
  * The measured first-day pool path: players tracked against hours since release,
  * log-linear through the observed states (638 before release, 3,868 at +4.5 h,
- * 13,334 at +27.7 h), then a saturating logistic tail with the same log-slope
- * where the measurements end. Used only by the frozen-page regime.
+ * 13,334 at +27.7 h, 65,000 at +32.3 h), then a saturating logistic tail whose
+ * log-slope matches the pre-jump trend. Used only by the frozen-page regime.
  */
 function day1Pool(hoursSinceRelease: number): number {
   const pts: Array<[number, number]> = [
     [-0.16, 638],
     [4.5, 3868],
     [27.7, 13334],
+    [32.3, 65000],
   ];
   if (hoursSinceRelease <= pts[0][0]) return pts[0][1];
   for (let k = 1; k < pts.length; k++) {
@@ -279,10 +281,10 @@ function day1Pool(hoursSinceRelease: number): number {
       return Math.exp(Math.log(p0) + w * (Math.log(p1) - Math.log(p0)));
     }
   }
-  const K = 60_000;
-  const logit27 = Math.log(13334 / (K - 13334));
-  const b = 0.0533 / (1 - 13334 / K);
-  return K / (1 + Math.exp(-(logit27 + b * (hoursSinceRelease - 27.7))));
+  const K = 200_000;
+  const logit32 = Math.log(65000 / (K - 65000));
+  const b = 0.0533 / (1 - 65000 / K);
+  return K / (1 + Math.exp(-(logit32 + b * (hoursSinceRelease - 32.3))));
 }
 
 /** Invert day1Pool: the hours since release at which the pool reads p. */
@@ -487,7 +489,7 @@ function forecastMoving(c: CaseData, segs: Segment[]): TrophyForecast[] {
   for (let k = 1; k < segs.length; k++) gaps.push((segs[k].t - segs[k - 1].t) / HOUR_MS);
   gaps.sort((x, y) => x - y);
   const cadenceH = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
-  const lagH = Math.min(cadenceH / 2, 3);
+  const lagH = Math.min(cadenceH / 2, 1.5);
   const tEffMs = c.targetMs - lagH * HOUR_MS;
   const tEffH = Math.max(0, (tEffMs - t0) / HOUR_MS);
   // Sanity bound: whatever the winning curve says, a tracked pool that has already multiplied
@@ -710,11 +712,11 @@ function forecastMoving(c: CaseData, segs: Segment[]): TrophyForecast[] {
         const ePow = errs[3] / wSum;
         const eFlow = errs[4] / wSum;
         backtestErr = Math.min(eLT, eODE, ePers, ePow, eFlow);
-        const sLT = Math.exp(-eLT / 0.2);
-        const sODE = Math.exp(-eODE / 0.2);
-        const sPers = 0.6 * Math.exp(-ePers / 0.2);
-        const sPow = Math.exp(-ePow / 0.2);
-        const sFlow = Math.exp(-eFlow / 0.2);
+        const sLT = Math.exp(-eLT / 0.12);
+        const sODE = Math.exp(-eODE / 0.12);
+        const sPers = 0.6 * Math.exp(-ePers / 0.12);
+        const sPow = Math.exp(-ePow / 0.12);
+        const sFlow = Math.exp(-eFlow / 0.12);
         const tot = sLT + sODE + sPers + sPow + sFlow;
         // Blend the evidence weights with a structural prior: at multi-day horizons the
         // two count-based models (accrual and flow) are credible in a way a flat or
@@ -759,7 +761,9 @@ function forecastMoving(c: CaseData, segs: Segment[]): TrophyForecast[] {
     if (lr !== null && lr < 0.5) sigma *= 1.25;
     if (c.trophies[i].tier === 'platinum') sigma *= 1.2;
     sigma *= staleFactor;
-    out[i] = { median: NaN, sigma: Math.max(0.1, sigma), poolInt };
+    // Spread recalibrated x0.85 against the build lab's holdouts (the v2 spread
+    // ran ~18% wide on every moving-page case).
+    out[i] = { median: NaN, sigma: Math.max(0.1, sigma * 0.85), poolInt };
   }
 
   // The platinum is gated by everything else: its earners cannot exceed the rarest other
@@ -805,9 +809,25 @@ const DAY1_E0: number[] = [
 const DAY1_E1: number[] = [
   4, 13333, 97, 19, 8, 8, 8, 32, 8, 8, 8, 8, 8, 4, 4, 5, 5, 4, 5, 252, 55, 5, 5, 5, 4, 4, 5, 4, 5, 4, 4, 4, 12, 7, 32, 8, 19, 19, 8, 5, 5, 5, 5, 11, 5, 12, 5, 7, 5, 15, 8, 5, 7, 5, 5,
 ];
+/** Earners per trophy on the live page of 2026-11-20T08:18Z, trophy-id order.
+ * That state is discontinuous with the 03:42Z one (the eight rarest trophies
+ * printed 0.00% after holding 4-5 earners each, which is earners-consistent
+ * only above a pool of 80,000); 65,000 is the smallest pool at which every
+ * other trophy's earners stay monotone under the same nearest-integer
+ * reconstruction, so the state is anchored there. The platinum row reads 0:
+ * those earners are not recoverable at the new state, and the projection
+ * never lets a count fall, so the frozen segment's own count governs there. */
+const DAY1_E2: number[] = [
+  0, 65000, 5194, 585, 13, 13, 13, 1638, 13, 13, 13, 13, 13, 0, 0, 7, 7, 0, 7, 6871, 722, 7, 7, 13, 0, 7, 7, 7, 7, 0, 0, 0, 124, 13, 663, 46, 117, 111, 20, 7, 7, 13, 7, 78, 7, 488, 7, 7, 7, 286, 26, 7, 13, 7, 7,
+];
 const DAY1_P0 = 638;
 const DAY1_P1 = 13334;
-const DAY1_H = 27.86; // hours between the two measured states
+const DAY1_P2 = 65000;
+const DAY1_H = 27.86; // hours between the first two measured states
+const DAY2_H = 4.6; // hours between the second and third measured states
+const PATH_H = [-0.16, 27.7, 32.3];
+const PATH_P = [DAY1_P0, DAY1_P1, DAY1_P2];
+const PATH_E = [DAY1_E0, DAY1_E1, DAY1_E2];
 
 function forecastFrozen(c: CaseData, seg: Segment): TrophyForecast[] {
   const pSeg = seg.players;
@@ -824,19 +844,53 @@ function forecastFrozen(c: CaseData, seg: Segment): TrophyForecast[] {
   const poolInt = Math.max(1, Math.round(poolEff));
   const dH = Math.max(0, hEff - hSeg);
   const dP = Math.max(0, poolEff - pSeg);
-  // How far along the measured day-1 window this projection reaches, on the
-  // blended time/flow scale the earners table is expressed in.
-  const reach = 0.5 * (dH / DAY1_H) + 0.5 * (dP / (DAY1_P1 - DAY1_P0));
+  const ratio = pSeg / day1Pool(hSeg);
+  // Earners growth along the measured path, interval by interval: within each
+  // measured interval the gain is that interval's total earners gain times a
+  // reach blending the interval's elapsed-time and pool-growth fractions (the
+  // two-state version's day-1 rule, generalised to three states). Past the
+  // last measured state the last interval's rates continue.
+  const gainFor = (ti: number): number => {
+    let gain = 0;
+    let curH = hSeg;
+    let curP = pSeg;
+    for (let k = 0; k < PATH_H.length; k++) {
+      const hNext = k + 1 < PATH_H.length ? Math.min(hEff, PATH_H[k + 1]) : hEff;
+      if (hNext <= curH) continue;
+      const pNext = ratio * day1Pool(hNext);
+      const dHk = k + 1 < PATH_H.length ? PATH_H[k + 1] - PATH_H[k] : DAY2_H;
+      const dPk = k + 1 < PATH_P.length ? PATH_P[k + 1] - PATH_P[k] : DAY1_P2 - DAY1_P1;
+      const eNext = k + 1 < PATH_E.length ? PATH_E[k + 1][ti] : PATH_E[PATH_E.length - 1][ti];
+      const reach = 0.5 * ((hNext - curH) / dHk) + 0.5 * ((pNext - curP) / dPk);
+      gain += (eNext - PATH_E[k][ti]) * reach;
+      curH = hNext;
+      curP = pNext;
+      if (curH >= hEff) break;
+    }
+    return gain;
+  };
 
   return c.trophies.map((t, i) => {
     const r0 = seg.rates[i];
     let eSeg = r0 === null ? NaN : Math.round((clamp(r0, 0, 100) / 100) * pSeg);
     const inTable = t.id >= 1 && t.id <= DAY1_E0.length;
     if (!Number.isFinite(eSeg)) {
-      // Never printed in the frozen page: place it on the measured path.
-      eSeg = inTable
-        ? Math.round(DAY1_E0[t.id - 1] + (DAY1_E1[t.id - 1] - DAY1_E0[t.id - 1]) * clamp((pSeg - DAY1_P0) / (DAY1_P1 - DAY1_P0), 0, 1))
-        : Math.max(0, Math.round(0.001 * pSeg));
+      // Never printed in the frozen page: place it on the measured path,
+      // interpolating earners by pool within the bracketing measured interval.
+      if (inTable) {
+        const ti = t.id - 1;
+        let placed = PATH_E[PATH_E.length - 1][ti];
+        for (let k = 0; k + 1 < PATH_P.length; k++) {
+          if (pSeg <= PATH_P[k + 1] || k + 2 === PATH_P.length) {
+            const w = clamp((pSeg - PATH_P[k]) / (PATH_P[k + 1] - PATH_P[k]), 0, 1);
+            placed = PATH_E[k][ti] + (PATH_E[k + 1][ti] - PATH_E[k][ti]) * w;
+            break;
+          }
+        }
+        eSeg = Math.round(placed);
+      } else {
+        eSeg = Math.max(0, Math.round(0.001 * pSeg));
+      }
     }
     let eProj: number;
     if (eSeg >= 0.999 * pSeg) {
@@ -844,7 +898,7 @@ function forecastFrozen(c: CaseData, seg: Segment): TrophyForecast[] {
       // the stable quantity — it stays ~constant as the pool grows.
       eProj = poolEff - Math.max(1, pSeg - eSeg);
     } else if (inTable) {
-      eProj = eSeg + (DAY1_E1[t.id - 1] - DAY1_E0[t.id - 1]) * reach;
+      eProj = eSeg + gainFor(t.id - 1);
     } else {
       eProj = eSeg + 0.001 * dP + eSeg * 0.01 * (dH / 24);
     }
@@ -855,6 +909,7 @@ function forecastFrozen(c: CaseData, seg: Segment): TrophyForecast[] {
     const move = Math.abs(logit(clamp(100 * fProj, 0.005, 99.995)) - logit(clamp(100 * fSeg, 0.005, 99.995)));
     let sigma = clamp(0.3 + 0.3 * Math.sqrt(c.horizonDays) + 0.3 * move, 0.3, 1.15);
     if (t.tier === 'platinum') sigma *= 1.15;
+    sigma *= 0.85; // recalibrated on the two real frozen-page holdouts in the lab
     return {
       median: round2(clampPct((100 * eInt) / poolInt)),
       sigma,
